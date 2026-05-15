@@ -42,17 +42,17 @@ held_mods = set()  # keycodes of modifiers the host says are held
 
 
 def handle(line):
-    line = line.strip()
+    line = line.rstrip("\r\n")
     if not line:
         return
     if line.startswith("t "):
-        # layout.write() toggles shift around capitals/symbols; if the user is
-        # holding shift externally, that release kills their held modifier.
-        # Re-press any tracked modifiers after each write to keep them sticky.
-        try:
-            layout.write(line[2:])
-        except Exception:
-            pass
+        text = line[2:]
+        for ch in text:
+            try:
+                layout.write(ch)
+            except Exception:
+                pass
+            time.sleep(0.012)
         for kc in held_mods:
             try:
                 keyboard.press(kc)
