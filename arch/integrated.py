@@ -194,30 +194,20 @@ def main():
             time.sleep(0.02)
         if mac_cursor[0] is None:
             return False
-        def step(d):
-            if d == 0: return 0
-            s = max(-40, min(40, d // 2 if abs(d) > 4 else d))
-            return s if s != 0 else (1 if d > 0 else -1)
         for _ in range(max_iters):
             cx, cy = mac_cursor[0], mac_cursor[1]
             dx = target_x - cx
             dy = target_y - cy
             if abs(dx) <= threshold and abs(dy) <= threshold:
-                # Confirm cursor has actually stopped: poll once more after a
-                # brief pause. If it shifts, the Pico still has a step queued —
-                # loop and re-correct. Kills the "drift a few mm before click"
-                # jitter.
-                time.sleep(0.03)
-                if (abs(target_x - mac_cursor[0]) <= threshold
-                        and abs(target_y - mac_cursor[1]) <= threshold):
-                    with mac_lock:
-                        mac_model[0] = mac_cursor[0]
-                        mac_model[1] = mac_cursor[1]
-                    return True
-                continue
+                with mac_lock:
+                    mac_model[0] = cx; mac_model[1] = cy
+                return True
+            def step(d):
+                if d == 0: return 0
+                s = max(-40, min(40, d // 2 if abs(d) > 4 else d))
+                return s if s != 0 else (1 if d > 0 else -1)
             link.send(f"m {step(dx)} {step(dy)}")
-            # 30ms: at 60Hz cursor_daemon ticks every 16ms, plus Pico margin.
-            time.sleep(0.03)
+            time.sleep(0.06)
         return False
 
     def _startup_warp():
