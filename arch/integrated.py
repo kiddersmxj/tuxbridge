@@ -173,12 +173,13 @@ def main():
             link.send(f"m {cx} {cy}")
             first = False
 
-    def move_to(target_x, target_y, max_iters=6, threshold=4, settle=0.07, max_step=200):
-        # Closed-loop convergence: macOS pointer acceleration warps open-loop
-        # deltas, so iterate using cursor_daemon feedback until we land.
-        deadline_wait = 0.5
-        t0 = time.monotonic()
-        while mac_cursor[0] is None and time.monotonic() - t0 < deadline_wait:
+    def move_to(target_x, target_y, max_iters=20, threshold=3):
+        # Closed-loop: read cursor, send small step toward target, repeat.
+        # Step size kept small (<=40) so macOS pointer acceleration barely
+        # engages. After each step we wait for cursor_daemon to publish the
+        # new position, then re-aim based on reality. No accel model needed.
+        deadline = time.monotonic() + 0.5
+        while mac_cursor[0] is None and time.monotonic() < deadline:
             time.sleep(0.02)
         if mac_cursor[0] is None:
             return False
@@ -190,15 +191,15 @@ def main():
                 with mac_lock:
                     mac_model[0] = cx; mac_model[1] = cy
                 return True
-            # Cap per-iteration step so any residual accel can't carom past
-            # the target by orders of magnitude.
-            sdx = max(-max_step, min(max_step, dx))
-            sdy = max(-max_step, min(max_step, dy))
-            send_delta_chunked(sdx, sdy, gap=0.003)
-            # Wait long enough for cursor_daemon to publish a *settled*
-            # position (cursor_daemon polls at 20Hz; we need to let the
-            # full burst be processed before reading).
-            time.sleep(settle)
+            # Move at most 40 px per step. Sign-preserving with min 1 so a
+            # tiny remaining gap still nudges.
+            def step(d):
+                if d == 0: return 0
+                s = max(-40, min(40, d // 2 if abs(d) > 4 else d))
+                return s if s != 0 else (1 if d > 0 else -1)
+            link.send(f"m {step(dx)} {step(dy)}")
+            # 60ms = one cursor_daemon tick (20Hz=50ms) + Pico processing margin.
+            time.sleep(0.06)
         return False
 
     def _startup_warp():
