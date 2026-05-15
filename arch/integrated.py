@@ -24,6 +24,12 @@ import sys
 import threading
 import time
 
+# In touch mode, suppress SDL's synthetic touch->mouse events so FINGER and
+# MOUSE handlers don't both fire for the same tap. Must be set before pygame.
+if os.environ.get("TUXBRIDGE_TOUCH") == "1":
+    os.environ.setdefault("SDL_TOUCH_MOUSE_EVENTS", "0")
+    os.environ.setdefault("SDL_MOUSE_TOUCH_EVENTS", "0")
+
 import pygame
 from PIL import Image
 
@@ -189,35 +195,41 @@ def main():
 
     threading.Thread(target=_startup_warp, daemon=True).start()
 
+    CURSOR_PORT = int(os.environ.get("TUXBRIDGE_CURSOR_PORT", "8767"))
+
     def _poll_mac_cursor():
-        ssh_host = os.environ.get("TUXBRIDGE_SSH_HOST", MAC_HOST)
-        # One persistent SSH process running cliclick in a loop. Per-poll SSH
-        # handshake was the bottleneck; this streams cursor at ~20 Hz instead.
+        # Subscribe to mac/cursor_daemon.py over TCP. Cross-platform — Pi and
+        # Arch both reach the Mac the same way.
+        backoff = 1.0
         while not stop_event.is_set():
-            proc = subprocess.Popen(
-                ["ssh", "-tt", "-o", "ServerAliveInterval=10", ssh_host,
-                 "while :; do /opt/homebrew/bin/cliclick p; sleep 0.05; done"],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                bufsize=1,
-            )
             try:
-                for line in proc.stdout:
-                    if stop_event.is_set():
-                        break
-                    parts = line.strip().split(",")
-                    if len(parts) != 2:
-                        continue
-                    try:
-                        mx, my = int(parts[0]), int(parts[1])
-                    except ValueError:
-                        continue
-                    mac_cursor[0] = mx; mac_cursor[1] = my
-                    with mac_lock:
-                        mac_model[0] = mx; mac_model[1] = my
-            finally:
-                try: proc.terminate()
-                except Exception: pass
-            time.sleep(1.0)  # backoff before reconnecting the loop
+                sock = socket.create_connection((CAPTURE_HOST, CURSOR_PORT), timeout=5)
+                sock.settimeout(None)
+                print(f"cursor: connected to {CAPTURE_HOST}:{CURSOR_PORT}", file=sys.stderr)
+                backoff = 1.0
+                buf = b""
+                with sock:
+                    while not stop_event.is_set():
+                        chunk = sock.recv(4096)
+                        if not chunk:
+                            raise OSError("eof")
+                        buf += chunk
+                        while b"\n" in buf:
+                            line, buf = buf.split(b"\n", 1)
+                            parts = line.decode("ascii", "ignore").strip().split(",")
+                            if len(parts) != 2:
+                                continue
+                            try:
+                                mx, my = int(parts[0]), int(parts[1])
+                            except ValueError:
+                                continue
+                            mac_cursor[0] = mx; mac_cursor[1] = my
+                            with mac_lock:
+                                mac_model[0] = mx; mac_model[1] = my
+            except Exception as e:
+                print(f"cursor: error {e!r}; reconnect in {backoff:.1f}s", file=sys.stderr)
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 10.0)
 
     if os.environ.get("TUXBRIDGE_NO_POLL") != "1":
         threading.Thread(target=_poll_mac_cursor, daemon=True).start()
@@ -354,6 +366,36 @@ def main():
                     text = ev.text.replace("\r", "").replace("\n", "")
                     if text:
                         link.send(f"t {text}")
+                elif TOUCH and ev.type == pygame.FINGERDOWN:
+                    px = int(ev.x * win_w); py = int(ev.y * win_h)
+                    target_mac_x = REGION[0] + int(px / SCALE)
+                    target_mac_y = REGION[1] + int(py / SCALE)
+                    with mac_lock:
+                        if mac_model[0] is not None:
+                            dx = target_mac_x - mac_model[0]
+                            dy = target_mac_y - mac_model[1]
+                            mac_model[0] = target_mac_x
+                            mac_model[1] = target_mac_y
+                        else:
+                            dx = dy = 0
+                    if dx or dy:
+                        send_delta_chunked(dx, dy)
+                    link.send("d l")
+                elif TOUCH and ev.type == pygame.FINGERMOTION:
+                    px = int(ev.x * win_w); py = int(ev.y * win_h)
+                    target_mac_x = REGION[0] + int(px / SCALE)
+                    target_mac_y = REGION[1] + int(py / SCALE)
+                    with mac_lock:
+                        if mac_model[0] is None:
+                            continue
+                        dx = target_mac_x - mac_model[0]
+                        dy = target_mac_y - mac_model[1]
+                        mac_model[0] = target_mac_x
+                        mac_model[1] = target_mac_y
+                    if dx or dy:
+                        send_delta_chunked(dx, dy)
+                elif TOUCH and ev.type == pygame.FINGERUP:
+                    link.send("u l")
             clock.tick(60)
     finally:
         stop_event.set()
