@@ -355,6 +355,11 @@ def main():
                 if not grabbed:
                     continue
                 if ev.type == pygame.MOUSEBUTTONDOWN and TOUCH:
+                    # Drop taps in the top ~28 px (macOS title bar zone).
+                    # Dragging there moves the iPhone Mirroring window off
+                    # to the dummy display.
+                    if ev.pos[1] < int(28 * SCALE):
+                        continue
                     if ev.button == 1:
                         # Pre-release in case SDL dropped a prior touch-up.
                         if touch_btn_down[0]:
