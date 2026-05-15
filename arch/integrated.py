@@ -166,6 +166,33 @@ def main():
             cy = max(-127, min(127, dy)); dy -= cy
             link.send(f"m {cx} {cy}")
 
+    def move_to(target_x, target_y, max_iters=8, threshold=2, settle=0.08):
+        # Closed-loop convergence: macOS pointer acceleration warps open-loop
+        # deltas, so iterate using cursor_daemon feedback until we land.
+        deadline_wait = 0.5
+        t0 = time.monotonic()
+        while mac_cursor[0] is None and time.monotonic() - t0 < deadline_wait:
+            time.sleep(0.02)
+        if mac_cursor[0] is None:
+            return False
+        for _ in range(max_iters):
+            cx, cy = mac_cursor[0], mac_cursor[1]
+            dx = target_x - cx
+            dy = target_y - cy
+            if abs(dx) <= threshold and abs(dy) <= threshold:
+                with mac_lock:
+                    mac_model[0] = cx; mac_model[1] = cy
+                return True
+            send_delta_chunked(dx, dy)
+            # Wait for feedback to update (cursor_daemon @ 20Hz = 50ms period).
+            prev = (cx, cy)
+            t_start = time.monotonic()
+            while time.monotonic() - t_start < settle:
+                if (mac_cursor[0], mac_cursor[1]) != prev:
+                    break
+                time.sleep(0.01)
+        return False
+
     def _startup_warp():
         try:
             subprocess.run(
@@ -177,15 +204,13 @@ def main():
             print(f"activate failed: {e}", file=sys.stderr)
         target_x = x + w // 2
         target_y = y + h // 2
-        for _ in range(50):
-            link.send("m -127 -127"); time.sleep(0.008)
-        time.sleep(0.1)
-        send_delta_chunked(target_x, target_y)
-        time.sleep(0.1)
+        ok = move_to(target_x, target_y)
+        time.sleep(0.05)
         link.send("d l"); time.sleep(0.05); link.send("u l")
-        with mac_lock:
-            mac_model[0] = target_x; mac_model[1] = target_y
-        print(f"warp: cursor driven to {target_x},{target_y} + focus click", file=sys.stderr)
+        # Re-converge after the click (focus shift may nudge nothing, but be safe).
+        move_to(target_x, target_y)
+        print(f"warp: cursor converged on {target_x},{target_y} (ok={ok}) "
+              f"actual={mac_cursor[0]},{mac_cursor[1]}", file=sys.stderr)
 
     threading.Thread(target=_startup_warp, daemon=True).start()
 
@@ -309,21 +334,12 @@ def main():
                     continue
                 if ev.type == pygame.MOUSEBUTTONDOWN and TOUCH:
                     # Touch: warp to the tap location *before* the click so the
-                    # press happens under the finger, not wherever the cursor
-                    # was last.
+                    # press happens under the finger. Closed-loop converges
+                    # past macOS pointer acceleration.
                     px, py = ev.pos
                     target_mac_x = REGION[0] + int(px / SCALE)
                     target_mac_y = REGION[1] + int(py / SCALE)
-                    with mac_lock:
-                        if mac_model[0] is not None:
-                            dx = target_mac_x - mac_model[0]
-                            dy = target_mac_y - mac_model[1]
-                            mac_model[0] = target_mac_x
-                            mac_model[1] = target_mac_y
-                        else:
-                            dx = dy = 0
-                    if dx or dy:
-                        send_delta_chunked(dx, dy)
+                    move_to(target_mac_x, target_mac_y)
                 if ev.type == pygame.MOUSEMOTION:
                     px, py = ev.pos
                     target_mac_x = REGION[0] + int(px / SCALE)
