@@ -27,7 +27,7 @@ from PIL import Image
 CAPTURE_PORT = int(os.environ.get("TUXBRIDGE_CAPTURE_PORT", "8766"))
 FPS = float(os.environ.get("TUXBRIDGE_CAPTURE_FPS", "15"))
 JPEG_QUALITY = int(os.environ.get("TUXBRIDGE_CAPTURE_QUALITY", "70"))
-REGION_SCRIPT = os.path.expanduser("~/tuxbridge/iphone-region.sh")
+REGION_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "iphone-region.sh")
 
 
 def resolve_region():
