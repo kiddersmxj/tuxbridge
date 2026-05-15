@@ -160,13 +160,22 @@ def main():
     mac_cursor = [None, None]
     stop_event = threading.Event()
 
-    def send_delta_chunked(dx, dy):
+    def send_delta_chunked(dx, dy, gap=0.004):
+        # Pace chunks: bursts at full rate make macOS pointer acceleration
+        # amplify the motion non-linearly. ~4ms gap keeps reports at a
+        # rate the OS treats as "normal velocity" so 1:1 mapping holds
+        # (especially when accel is disabled, this also keeps Pico's
+        # serial buffer from filling).
+        first = True
         while dx or dy:
+            if not first:
+                time.sleep(gap)
             cx = max(-127, min(127, dx)); dx -= cx
             cy = max(-127, min(127, dy)); dy -= cy
             link.send(f"m {cx} {cy}")
+            first = False
 
-    def move_to(target_x, target_y, max_iters=8, threshold=2, settle=0.08):
+    def move_to(target_x, target_y, max_iters=12, threshold=3, settle=0.18, max_step=120):
         # Closed-loop convergence: macOS pointer acceleration warps open-loop
         # deltas, so iterate using cursor_daemon feedback until we land.
         deadline_wait = 0.5
@@ -183,14 +192,15 @@ def main():
                 with mac_lock:
                     mac_model[0] = cx; mac_model[1] = cy
                 return True
-            send_delta_chunked(dx, dy)
-            # Wait for feedback to update (cursor_daemon @ 20Hz = 50ms period).
-            prev = (cx, cy)
-            t_start = time.monotonic()
-            while time.monotonic() - t_start < settle:
-                if (mac_cursor[0], mac_cursor[1]) != prev:
-                    break
-                time.sleep(0.01)
+            # Cap per-iteration step so any residual accel can't carom past
+            # the target by orders of magnitude.
+            sdx = max(-max_step, min(max_step, dx))
+            sdy = max(-max_step, min(max_step, dy))
+            send_delta_chunked(sdx, sdy)
+            # Wait long enough for cursor_daemon to publish a *settled*
+            # position (cursor_daemon polls at 20Hz; we need to let the
+            # full burst be processed before reading).
+            time.sleep(settle)
         return False
 
     def _startup_warp():
