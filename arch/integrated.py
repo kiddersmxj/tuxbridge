@@ -341,6 +341,11 @@ def main():
                 if not grabbed:
                     continue
                 if ev.type == pygame.MOUSEBUTTONDOWN and TOUCH:
+                    # Drop taps in the top 28*SCALE px — that's the macOS
+                    # title-bar zone, and dragging there moves the iPhone
+                    # Mirroring window off to the dummy display.
+                    if ev.pos[1] < int(28 * SCALE):
+                        continue
                     # Touch: warp to the tap location *before* the click so the
                     # press happens under the finger. Closed-loop converges
                     # past macOS pointer acceleration.
