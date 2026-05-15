@@ -24,12 +24,6 @@ import sys
 import threading
 import time
 
-# In touch mode, suppress SDL's synthetic touch->mouse events so FINGER and
-# MOUSE handlers don't both fire for the same tap. Must be set before pygame.
-if os.environ.get("TUXBRIDGE_TOUCH") == "1":
-    os.environ.setdefault("SDL_TOUCH_MOUSE_EVENTS", "0")
-    os.environ.setdefault("SDL_MOUSE_TOUCH_EVENTS", "0")
-
 import pygame
 from PIL import Image
 
@@ -366,36 +360,6 @@ def main():
                     text = ev.text.replace("\r", "").replace("\n", "")
                     if text:
                         link.send(f"t {text}")
-                elif TOUCH and ev.type == pygame.FINGERDOWN:
-                    px = int(ev.x * win_w); py = int(ev.y * win_h)
-                    target_mac_x = REGION[0] + int(px / SCALE)
-                    target_mac_y = REGION[1] + int(py / SCALE)
-                    with mac_lock:
-                        if mac_model[0] is not None:
-                            dx = target_mac_x - mac_model[0]
-                            dy = target_mac_y - mac_model[1]
-                            mac_model[0] = target_mac_x
-                            mac_model[1] = target_mac_y
-                        else:
-                            dx = dy = 0
-                    if dx or dy:
-                        send_delta_chunked(dx, dy)
-                    link.send("d l")
-                elif TOUCH and ev.type == pygame.FINGERMOTION:
-                    px = int(ev.x * win_w); py = int(ev.y * win_h)
-                    target_mac_x = REGION[0] + int(px / SCALE)
-                    target_mac_y = REGION[1] + int(py / SCALE)
-                    with mac_lock:
-                        if mac_model[0] is None:
-                            continue
-                        dx = target_mac_x - mac_model[0]
-                        dy = target_mac_y - mac_model[1]
-                        mac_model[0] = target_mac_x
-                        mac_model[1] = target_mac_y
-                    if dx or dy:
-                        send_delta_chunked(dx, dy)
-                elif TOUCH and ev.type == pygame.FINGERUP:
-                    link.send("u l")
             clock.tick(60)
     finally:
         stop_event.set()
