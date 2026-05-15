@@ -37,15 +37,27 @@ KEYS.update({
 })
 
 
+MODIFIER_NAMES = ("shift", "ctrl", "alt", "cmd")
+held_mods = set()  # keycodes of modifiers the host says are held
+
+
 def handle(line):
     line = line.strip()
     if not line:
         return
     if line.startswith("t "):
+        # layout.write() toggles shift around capitals/symbols; if the user is
+        # holding shift externally, that release kills their held modifier.
+        # Re-press any tracked modifiers after each write to keep them sticky.
         try:
             layout.write(line[2:])
         except Exception:
             pass
+        for kc in held_mods:
+            try:
+                keyboard.press(kc)
+            except Exception:
+                pass
         return
     parts = line.split(" ")
     cmd = parts[0]
@@ -60,8 +72,12 @@ def handle(line):
             mouse.release(BUTTONS[parts[1]])
         elif cmd == "kd" and len(parts) >= 2 and parts[1] in KEYS:
             keyboard.press(KEYS[parts[1]])
+            if parts[1] in MODIFIER_NAMES:
+                held_mods.add(KEYS[parts[1]])
         elif cmd == "ku" and len(parts) >= 2 and parts[1] in KEYS:
             keyboard.release(KEYS[parts[1]])
+            if parts[1] in MODIFIER_NAMES:
+                held_mods.discard(KEYS[parts[1]])
     except Exception:
         pass
 

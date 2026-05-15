@@ -147,6 +147,7 @@ def main():
     print(f"iPhone region: {REGION}", file=sys.stderr)
 
     pygame.init()
+    pygame.key.set_repeat(400, 40)
     win_w, win_h = int(w * SCALE), int(h * SCALE)
     screen = pygame.display.set_mode((win_w, win_h))
     pygame.display.set_caption(f"tuxbridge {w}x{h} @ {MAC_HOST}")
@@ -190,22 +191,33 @@ def main():
 
     def _poll_mac_cursor():
         ssh_host = os.environ.get("TUXBRIDGE_SSH_HOST", MAC_HOST)
+        # One persistent SSH process running cliclick in a loop. Per-poll SSH
+        # handshake was the bottleneck; this streams cursor at ~20 Hz instead.
         while not stop_event.is_set():
+            proc = subprocess.Popen(
+                ["ssh", "-tt", "-o", "ServerAliveInterval=10", ssh_host,
+                 "while :; do /opt/homebrew/bin/cliclick p; sleep 0.05; done"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                bufsize=1,
+            )
             try:
-                r = subprocess.run(
-                    ["ssh", ssh_host, "/opt/homebrew/bin/cliclick", "p"],
-                    timeout=2, capture_output=True, text=True,
-                )
-                if r.returncode == 0:
-                    parts = r.stdout.strip().split(",")
-                    if len(parts) == 2:
+                for line in proc.stdout:
+                    if stop_event.is_set():
+                        break
+                    parts = line.strip().split(",")
+                    if len(parts) != 2:
+                        continue
+                    try:
                         mx, my = int(parts[0]), int(parts[1])
-                        mac_cursor[0] = mx; mac_cursor[1] = my
-                        with mac_lock:
-                            mac_model[0] = mx; mac_model[1] = my
-            except Exception:
-                pass
-            time.sleep(0.2)
+                    except ValueError:
+                        continue
+                    mac_cursor[0] = mx; mac_cursor[1] = my
+                    with mac_lock:
+                        mac_model[0] = mx; mac_model[1] = my
+            finally:
+                try: proc.terminate()
+                except Exception: pass
+            time.sleep(1.0)  # backoff before reconnecting the loop
 
     if os.environ.get("TUXBRIDGE_NO_POLL") != "1":
         threading.Thread(target=_poll_mac_cursor, daemon=True).start()
@@ -218,13 +230,15 @@ def main():
     else:
         threading.Thread(target=capture_loop, args=(frame_queue, stop_event), daemon=True).start()
 
-    grabbed = False
+    TOUCH = os.environ.get("TUXBRIDGE_TOUCH") == "1"
+    grabbed = TOUCH  # touchscreen: always "grabbed" — no toggle gesture exists
     def set_grab(on):
         nonlocal grabbed
         grabbed = on
-        pygame.event.set_grab(on)
+        if not TOUCH:
+            pygame.event.set_grab(on)
         pygame.mouse.set_visible(True)
-    set_grab(False)
+    set_grab(grabbed)
 
     last_frame_surface = None
     clock = pygame.time.Clock()
@@ -287,6 +301,23 @@ def main():
                     set_grab(True); continue
                 if not grabbed:
                     continue
+                if ev.type == pygame.MOUSEBUTTONDOWN and TOUCH:
+                    # Touch: warp to the tap location *before* the click so the
+                    # press happens under the finger, not wherever the cursor
+                    # was last.
+                    px, py = ev.pos
+                    target_mac_x = REGION[0] + int(px / SCALE)
+                    target_mac_y = REGION[1] + int(py / SCALE)
+                    with mac_lock:
+                        if mac_model[0] is not None:
+                            dx = target_mac_x - mac_model[0]
+                            dy = target_mac_y - mac_model[1]
+                            mac_model[0] = target_mac_x
+                            mac_model[1] = target_mac_y
+                        else:
+                            dx = dy = 0
+                    if dx or dy:
+                        send_delta_chunked(dx, dy)
                 if ev.type == pygame.MOUSEMOTION:
                     px, py = ev.pos
                     target_mac_x = REGION[0] + int(px / SCALE)
@@ -311,11 +342,13 @@ def main():
                         link.send(f"w {ev.y}")
                 elif ev.type == pygame.KEYDOWN:
                     name = KEY_MAP.get(ev.key)
-                    if name:
+                    # Printable letters/digits arrive via TEXTINPUT with shift
+                    # already resolved; skip kd/ku for them to avoid double-press.
+                    if name and not (len(name) == 1 and name.isalnum()):
                         link.send(f"kd {name}")
                 elif ev.type == pygame.KEYUP:
                     name = KEY_MAP.get(ev.key)
-                    if name:
+                    if name and not (len(name) == 1 and name.isalnum()):
                         link.send(f"ku {name}")
                 elif ev.type == pygame.TEXTINPUT:
                     text = ev.text.replace("\r", "").replace("\n", "")
