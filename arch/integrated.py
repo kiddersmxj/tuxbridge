@@ -292,9 +292,17 @@ def main():
         return REGION[0] + int(px / SCALE), REGION[1] + int(py / SCALE)
 
     def tap(px, py):
-        """Atomic tap: warp under finger, click, release."""
+        """Atomic tap: warp under finger, click, release.
+        Refuses to click if the cursor didn't land inside the iPhone display
+        rect — guarantees we can't accidentally click on the macOS desktop
+        outside the iPhone Mirroring window (which would background it)."""
         tx, ty = pygame_to_mac(px, py)
         move_to(tx, ty)
+        rx, ry, rw, rh = REGION
+        cx, cy = mac_cursor[0], mac_cursor[1]
+        if cx is None or not (rx <= cx < rx + rw and ry <= cy < ry + rh):
+            print(f"tap blocked: cursor {cx},{cy} outside {REGION}", file=sys.stderr)
+            return
         link.send("d l")
         time.sleep(0.04)
         link.send("u l")
