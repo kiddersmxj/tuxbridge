@@ -153,6 +153,17 @@ def main():
     pygame.display.set_caption(f"tuxbridge {w}x{h} @ {MAC_HOST}")
     font = pygame.font.SysFont(None, 18)
 
+    # iPhone display has rounded corners (~12% of short edge). Build a mask
+    # that punches a rounded-rect hole — blit it over the frame so the
+    # corners outside the iPhone display look like real device bezel.
+    corner_radius = int(os.environ.get(
+        "TUXBRIDGE_CORNER_RADIUS",
+        str(int(min(win_w, win_h) * 0.12))))
+    corner_mask = pygame.Surface((win_w, win_h), pygame.SRCALPHA)
+    corner_mask.fill((0, 0, 0, 255))
+    pygame.draw.rect(corner_mask, (0, 0, 0, 0),
+                     (0, 0, win_w, win_h), border_radius=corner_radius)
+
     link = Link(MAC_HOST, MAC_PORT)
 
     mac_model = [None, None]
@@ -183,23 +194,30 @@ def main():
             time.sleep(0.02)
         if mac_cursor[0] is None:
             return False
+        def step(d):
+            if d == 0: return 0
+            s = max(-40, min(40, d // 2 if abs(d) > 4 else d))
+            return s if s != 0 else (1 if d > 0 else -1)
         for _ in range(max_iters):
             cx, cy = mac_cursor[0], mac_cursor[1]
             dx = target_x - cx
             dy = target_y - cy
             if abs(dx) <= threshold and abs(dy) <= threshold:
-                with mac_lock:
-                    mac_model[0] = cx; mac_model[1] = cy
-                return True
-            # Move at most 40 px per step. Sign-preserving with min 1 so a
-            # tiny remaining gap still nudges.
-            def step(d):
-                if d == 0: return 0
-                s = max(-40, min(40, d // 2 if abs(d) > 4 else d))
-                return s if s != 0 else (1 if d > 0 else -1)
+                # Confirm cursor has actually stopped: poll once more after a
+                # brief pause. If it shifts, the Pico still has a step queued —
+                # loop and re-correct. Kills the "drift a few mm before click"
+                # jitter.
+                time.sleep(0.03)
+                if (abs(target_x - mac_cursor[0]) <= threshold
+                        and abs(target_y - mac_cursor[1]) <= threshold):
+                    with mac_lock:
+                        mac_model[0] = mac_cursor[0]
+                        mac_model[1] = mac_cursor[1]
+                    return True
+                continue
             link.send(f"m {step(dx)} {step(dy)}")
-            # 60ms = one cursor_daemon tick (20Hz=50ms) + Pico processing margin.
-            time.sleep(0.06)
+            # 30ms: at 60Hz cursor_daemon ticks every 16ms, plus Pico margin.
+            time.sleep(0.03)
         return False
 
     def _startup_warp():
@@ -401,6 +419,7 @@ def main():
                 overlay = font.render("click to grab — Ctrl+Alt+G release — R recenter", True, (240, 240, 80))
                 screen.blit(overlay, (12, win_h - 22))
 
+            screen.blit(corner_mask, (0, 0))
             pygame.display.flip()
 
             events = pygame.event.get()

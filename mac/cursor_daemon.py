@@ -19,7 +19,7 @@ import time
 import Quartz
 
 PORT = int(os.environ.get("TUXBRIDGE_CURSOR_PORT", "8767"))
-FPS = float(os.environ.get("TUXBRIDGE_CURSOR_FPS", "20"))
+FPS = float(os.environ.get("TUXBRIDGE_CURSOR_FPS", "60"))
 
 
 def pick_bind_addr():
