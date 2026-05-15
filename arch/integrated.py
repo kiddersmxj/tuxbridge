@@ -169,6 +169,7 @@ def main():
     mac_model = [None, None]
     mac_lock = threading.Lock()
     mac_cursor = [None, None]
+    cursor_event = threading.Event()  # set every time a new reading lands
     stop_event = threading.Event()
 
     def send_delta_chunked(dx, dy, gap=0.0):
@@ -184,16 +185,13 @@ def main():
             link.send(f"m {cx} {cy}")
             first = False
 
-    def move_to(target_x, target_y, max_iters=20, threshold=3):
-        # Closed-loop: read cursor, send small step toward target, repeat.
-        # Step size kept small (<=40) so macOS pointer acceleration barely
-        # engages. After each step we wait for cursor_daemon to publish the
-        # new position, then re-aim based on reality. No accel model needed.
-        #
-        # Containment: clamp the target inside REGION, and after every step
-        # check whether the cursor escaped. If it did, the next step is a
-        # corrective pull back inside — guarantees the green dot never sits
-        # outside the iPhone display rect for more than one tick.
+    def move_to(target_x, target_y, max_iters=6, threshold=2):
+        # With pointer acceleration disabled on the Pico (see
+        # mac/start-session.sh: hidutil HIDPointerAcceleration=0), each HID
+        # delta maps 1:1 to a cursor pixel. So we send the full delta in one
+        # shot (chunked at the Pico's ±127 ceiling), wait for one cursor
+        # publication, and verify. Most taps converge in a single iteration;
+        # the loop only catches USB-event drops or boundary-clamp residue.
         rx, ry, rw, rh = REGION
         margin = 2
         target_x = max(rx + margin, min(rx + rw - 1 - margin, target_x))
@@ -203,28 +201,25 @@ def main():
             time.sleep(0.02)
         if mac_cursor[0] is None:
             return False
-        def step(d):
-            if d == 0: return 0
-            s = max(-40, min(40, d // 2 if abs(d) > 4 else d))
-            return s if s != 0 else (1 if d > 0 else -1)
+        def wait_for_fresh_cursor(timeout=0.08):
+            cursor_event.clear()
+            cursor_event.wait(timeout)
         for _ in range(max_iters):
             cx, cy = mac_cursor[0], mac_cursor[1]
-            # If the cursor escaped REGION, override the target with the
-            # nearest in-bounds point until we're back inside.
+            # Containment: if outside, redirect target to the nearest
+            # in-bounds point so the cursor can't sit on the macOS desktop.
             if not (rx <= cx < rx + rw and ry <= cy < ry + rh):
                 tx = max(rx + margin, min(rx + rw - 1 - margin, cx))
                 ty = max(ry + margin, min(ry + rh - 1 - margin, cy))
-                link.send(f"m {step(tx - cx)} {step(ty - cy)}")
-                time.sleep(0.06)
-                continue
-            dx = target_x - cx
-            dy = target_y - cy
+                dx, dy = tx - cx, ty - cy
+            else:
+                dx, dy = target_x - cx, target_y - cy
             if abs(dx) <= threshold and abs(dy) <= threshold:
                 with mac_lock:
                     mac_model[0] = cx; mac_model[1] = cy
                 return True
-            link.send(f"m {step(dx)} {step(dy)}")
-            time.sleep(0.06)
+            send_delta_chunked(dx, dy)
+            wait_for_fresh_cursor()
         return False
 
     def _startup_warp():
@@ -279,6 +274,7 @@ def main():
                             mac_cursor[0] = mx; mac_cursor[1] = my
                             with mac_lock:
                                 mac_model[0] = mx; mac_model[1] = my
+                            cursor_event.set()
             except Exception as e:
                 print(f"cursor: error {e!r}; reconnect in {backoff:.1f}s", file=sys.stderr)
                 time.sleep(backoff)
@@ -321,7 +317,7 @@ def main():
             print(f"tap blocked: cursor {cx},{cy} outside {REGION}", file=sys.stderr)
             return
         link.send("d l")
-        time.sleep(0.04)
+        time.sleep(0.02)
         link.send("u l")
 
     def send_key(ev):
