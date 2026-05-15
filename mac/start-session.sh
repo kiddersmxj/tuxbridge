@@ -42,9 +42,12 @@ echo "dummy at ${MAIN_W}x0; iPhone Mirroring placed at ${TARGET_X},10"
 
 # Disable pointer acceleration for the Pico (VID 0x239A) — deltas map 1:1,
 # so the closed-loop tap can collapse to a single open-loop move + verify.
-# Setting persists until reboot; re-applied each session for safety.
+# macOS has two accel knobs and the Pico is mouse-class, so we need BOTH:
+# HIDMouseAcceleration is the one actually applied; HIDPointerAcceleration
+# is set for safety. Value -65536 is Apple's fixed-point "disabled".
 hidutil property --matching '{"VendorID":0x239A}' \
-  --set '{"HIDPointerAcceleration":0}' >/dev/null 2>&1 \
+  --set '{"HIDMouseAcceleration":-65536,"HIDPointerAcceleration":-65536}' \
+  >/dev/null 2>&1 \
   && echo "pico pointer accel: disabled" \
   || echo "pico pointer accel: hidutil failed (Pico unplugged?)"
 

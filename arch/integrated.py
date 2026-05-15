@@ -166,10 +166,11 @@ def main():
 
     link = Link(MAC_HOST, MAC_PORT)
 
-    mac_model = [None, None]
+    mac_model = [None, None]      # predicted cursor pos (updated by us)
     mac_lock = threading.Lock()
-    mac_cursor = [None, None]
-    cursor_event = threading.Event()  # set every time a new reading lands
+    mac_cursor = [None, None]     # actual cursor pos (from cursor_daemon)
+    cursor_event = threading.Event()
+    last_action_t = [0.0]         # monotonic time of last local-driven move
     stop_event = threading.Event()
 
     def send_delta_chunked(dx, dy, gap=0.0):
@@ -231,15 +232,20 @@ def main():
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             print(f"activate failed: {e}", file=sys.stderr)
-        target_x = x + w // 2
-        target_y = y + h // 2
-        ok = move_to(target_x, target_y)
-        time.sleep(0.05)
-        link.send("d l"); time.sleep(0.05); link.send("u l")
-        # Re-converge after the click (focus shift may nudge nothing, but be safe).
-        move_to(target_x, target_y)
-        print(f"warp: cursor converged on {target_x},{target_y} (ok={ok}) "
-              f"actual={mac_cursor[0]},{mac_cursor[1]}", file=sys.stderr)
+        # Wait for the first cursor reading so mac_model is seeded.
+        deadline = time.monotonic() + 3.0
+        while mac_model[0] is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if mac_model[0] is None:
+            print("warp: no cursor reading; skipping startup tap", file=sys.stderr)
+            return
+        target_x, target_y = clamp_to_region(x + w // 2, y + h // 2)
+        warp_to(target_x, target_y)
+        time.sleep(0.03)
+        link.send("d l"); time.sleep(0.012); link.send("u l")
+        print(f"warp: target {target_x},{target_y} "
+              f"model={mac_model[0]},{mac_model[1]} actual={mac_cursor[0]},{mac_cursor[1]}",
+              file=sys.stderr)
 
     threading.Thread(target=_startup_warp, daemon=True).start()
 
@@ -272,8 +278,12 @@ def main():
                             except ValueError:
                                 continue
                             mac_cursor[0] = mx; mac_cursor[1] = my
-                            with mac_lock:
-                                mac_model[0] = mx; mac_model[1] = my
+                            # Only reconcile mac_model from reality when
+                            # idle — otherwise we'd clobber the prediction
+                            # mid-action and the next delta would aim wrong.
+                            if time.monotonic() - last_action_t[0] > 0.3:
+                                with mac_lock:
+                                    mac_model[0] = mx; mac_model[1] = my
                             cursor_event.set()
             except Exception as e:
                 print(f"cursor: error {e!r}; reconnect in {backoff:.1f}s", file=sys.stderr)
@@ -304,20 +314,35 @@ def main():
     def pygame_to_mac(px, py):
         return REGION[0] + int(px / SCALE), REGION[1] + int(py / SCALE)
 
-    def tap(px, py):
-        """Atomic tap: warp under finger, click, release.
-        Refuses to click if the cursor didn't land inside the iPhone display
-        rect — guarantees we can't accidentally click on the macOS desktop
-        outside the iPhone Mirroring window (which would background it)."""
-        tx, ty = pygame_to_mac(px, py)
-        move_to(tx, ty)
+    def clamp_to_region(tx, ty):
         rx, ry, rw, rh = REGION
-        cx, cy = mac_cursor[0], mac_cursor[1]
-        if cx is None or not (rx <= cx < rx + rw and ry <= cy < ry + rh):
-            print(f"tap blocked: cursor {cx},{cy} outside {REGION}", file=sys.stderr)
+        m = 2
+        return (max(rx + m, min(rx + rw - 1 - m, tx)),
+                max(ry + m, min(ry + rh - 1 - m, ty)))
+
+    def warp_to(tx, ty):
+        """Teleport the Mac cursor to (tx, ty) via one wide-delta report.
+        Updates the local cursor model immediately — no waiting for
+        cursor_daemon. Caller is responsible for clamping tx, ty inside
+        REGION beforehand."""
+        with mac_lock:
+            cx, cy = mac_model[0], mac_model[1]
+        if cx is None:
+            return False
+        dx, dy = tx - cx, ty - cy
+        if dx or dy:
+            link.send(f"M {dx} {dy}")
+            with mac_lock:
+                mac_model[0] = tx; mac_model[1] = ty
+            last_action_t[0] = time.monotonic()
+        return True
+
+    def tap(px, py):
+        tx, ty = clamp_to_region(*pygame_to_mac(px, py))
+        if not warp_to(tx, ty):
             return
         link.send("d l")
-        time.sleep(0.02)
+        time.sleep(0.012)
         link.send("u l")
 
     def send_key(ev):
@@ -345,9 +370,13 @@ def main():
             return True
         return False
 
+    drag_active = [False]
+
     def handle_touch_events(events):
-        # Touch mode: every MOUSEBUTTONDOWN is one atomic tap. Drop all
-        # MOUSEMOTION / MOUSEBUTTONUP — they only cause drag/jitter.
+        # Touch mode: finger down warps + presses; motion streams wide-delta
+        # warps with the button held; up releases. With pointer accel
+        # disabled and 16-bit deltas, each warp teleports exactly, so a
+        # drag faithfully follows the finger path.
         for ev in events:
             if ev.type == pygame.QUIT:
                 pygame.event.post(pygame.event.Event(pygame.QUIT))
@@ -355,7 +384,16 @@ def main():
             if send_key(ev):
                 continue
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
-                tap(*ev.pos)
+                tx, ty = clamp_to_region(*pygame_to_mac(*ev.pos))
+                if warp_to(tx, ty):
+                    link.send("d l")
+                    drag_active[0] = True
+            elif ev.type == pygame.MOUSEMOTION and drag_active[0]:
+                tx, ty = clamp_to_region(*pygame_to_mac(*ev.pos))
+                warp_to(tx, ty)
+            elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1 and drag_active[0]:
+                link.send("u l")
+                drag_active[0] = False
 
     def handle_trackpad_events(events):
         for ev in events:

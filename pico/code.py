@@ -1,3 +1,4 @@
+import struct
 import time
 import usb_cdc
 import usb_hid
@@ -10,6 +11,18 @@ serial = usb_cdc.data
 mouse = Mouse(usb_hid.devices)
 keyboard = Keyboard(usb_hid.devices)
 layout = KeyboardLayoutUS(keyboard)
+
+# Wide-delta mouse: the last enabled device in boot.py. Its report is a
+# single 5-byte payload (button byte + signed 16-bit X + signed 16-bit Y),
+# letting us emit any screen-sized delta in one report. Buttons still go
+# through the standard Mouse (different report ID, no interference).
+rel16_dev = usb_hid.devices[-1]
+
+
+def send_wide_delta(dx, dy):
+    dx = max(-32768, min(32767, int(dx)))
+    dy = max(-32768, min(32767, int(dy)))
+    rel16_dev.send_report(struct.pack("<Bhh", 0, dx, dy))
 
 BUTTONS = {
     "l": Mouse.LEFT_BUTTON,
@@ -64,6 +77,8 @@ def handle(line):
     try:
         if cmd == "m" and len(parts) >= 3:
             mouse.move(x=int(parts[1]), y=int(parts[2]))
+        elif cmd == "M" and len(parts) >= 3:
+            send_wide_delta(int(parts[1]), int(parts[2]))
         elif cmd == "w" and len(parts) >= 2:
             mouse.move(wheel=max(-127, min(127, int(parts[1]))))
         elif cmd == "d" and len(parts) >= 2 and parts[1] in BUTTONS:
