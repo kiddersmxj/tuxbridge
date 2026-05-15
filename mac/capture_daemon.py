@@ -76,6 +76,9 @@ def serve(client, region):
 
 
 def pick_bind_addr():
+    override = os.environ.get("TUXBRIDGE_BIND", "")
+    if override:
+        return override
     try:
         out = subprocess.check_output(
             ["tailscale", "ip", "--4"], stderr=subprocess.DEVNULL, timeout=2,

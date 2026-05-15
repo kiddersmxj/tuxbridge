@@ -16,6 +16,9 @@ SERIAL_BAUD = 115200
 
 
 def pick_bind_addr():
+    override = os.environ.get("TUXBRIDGE_BIND", "")
+    if override:
+        return override
     # Prefer Tailscale IP; fall back to all-interfaces with a loud warning.
     try:
         out = subprocess.check_output(
