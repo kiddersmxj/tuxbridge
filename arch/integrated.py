@@ -281,6 +281,10 @@ def main():
 
     last_frame_surface = None
     clock = pygame.time.Clock()
+    touch_btn_down = [False]
+    touch_btn_down_time = [0.0]
+    touch_last_motion_time = [0.0]
+    TOUCH_STUCK_TIMEOUT = 1.0
     try:
         while True:
             try:
@@ -327,6 +331,16 @@ def main():
 
             pygame.display.flip()
 
+            # Watchdog: if button has been held with no motion for too long,
+            # force-release. Guards against SDL touch-up drops.
+            if TOUCH and touch_btn_down[0]:
+                now = time.monotonic()
+                if (now - touch_last_motion_time[0] > TOUCH_STUCK_TIMEOUT
+                        and now - touch_btn_down_time[0] > TOUCH_STUCK_TIMEOUT):
+                    print("touch watchdog: forcing u l", file=sys.stderr)
+                    link.send("u l")
+                    touch_btn_down[0] = False
+
             for ev in pygame.event.get():
                 if ev.type == pygame.QUIT:
                     return
@@ -341,24 +355,27 @@ def main():
                 if not grabbed:
                     continue
                 if ev.type == pygame.MOUSEBUTTONDOWN and TOUCH:
-                    # Touch mode: atomic tap. Warp under finger, then send
-                    # d/u together with a known short hold. This avoids two
-                    # past failure modes: SDL occasionally drops the touch-up
-                    # synth event (leaving the button "held"), and rapid
-                    # d/u with no spacing can be misread as a long-press.
                     if ev.button == 1:
-                        # Always release first in case a prior tap got stuck.
-                        link.send("u l")
+                        # Pre-release in case SDL dropped a prior touch-up.
+                        if touch_btn_down[0]:
+                            link.send("u l"); touch_btn_down[0] = False
                         px, py = ev.pos
                         target_mac_x = REGION[0] + int(px / SCALE)
                         target_mac_y = REGION[1] + int(py / SCALE)
                         move_to(target_mac_x, target_mac_y)
                         link.send("d l")
-                        time.sleep(0.04)
-                        link.send("u l")
+                        touch_btn_down[0] = True
+                        touch_btn_down_time[0] = time.monotonic()
+                        touch_last_motion_time[0] = touch_btn_down_time[0]
                     continue
                 if ev.type == pygame.MOUSEBUTTONUP and TOUCH:
-                    # Swallowed — atomic tap above already released.
+                    if ev.button == 1 and touch_btn_down[0]:
+                        # Enforce a 40ms minimum hold so iOS registers as tap.
+                        held = time.monotonic() - touch_btn_down_time[0]
+                        if held < 0.04:
+                            time.sleep(0.04 - held)
+                        link.send("u l")
+                        touch_btn_down[0] = False
                     continue
                 if ev.type == pygame.MOUSEMOTION:
                     px, py = ev.pos
@@ -373,6 +390,8 @@ def main():
                         mac_model[1] = target_mac_y
                     if dx or dy:
                         send_delta_chunked(dx, dy)
+                    if TOUCH and touch_btn_down[0]:
+                        touch_last_motion_time[0] = time.monotonic()
                 elif ev.type == pygame.MOUSEBUTTONDOWN:
                     if ev.button == 1:
                         link.send("d l")
