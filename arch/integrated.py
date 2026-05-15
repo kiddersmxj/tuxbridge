@@ -279,6 +279,81 @@ def main():
         pygame.mouse.set_visible(True)
     set_grab(grabbed)
 
+    def pygame_to_mac(px, py):
+        return REGION[0] + int(px / SCALE), REGION[1] + int(py / SCALE)
+
+    def tap(px, py):
+        """Atomic tap: warp under finger, click, release."""
+        tx, ty = pygame_to_mac(px, py)
+        move_to(tx, ty)
+        link.send("d l")
+        time.sleep(0.04)
+        link.send("u l")
+
+    def send_key(ev):
+        if ev.type == pygame.KEYDOWN and ev.key == pygame.K_g \
+                and (ev.mod & pygame.KMOD_CTRL) and (ev.mod & pygame.KMOD_ALT):
+            set_grab(not grabbed)
+            return True
+        if ev.type == pygame.KEYDOWN and ev.key == pygame.K_r and not grabbed:
+            threading.Thread(target=_startup_warp, daemon=True).start()
+            return True
+        if ev.type == pygame.KEYDOWN:
+            name = KEY_MAP.get(ev.key)
+            if name and not (len(name) == 1 and name.isalnum()):
+                link.send(f"kd {name}")
+            return True
+        if ev.type == pygame.KEYUP:
+            name = KEY_MAP.get(ev.key)
+            if name and not (len(name) == 1 and name.isalnum()):
+                link.send(f"ku {name}")
+            return True
+        if ev.type == pygame.TEXTINPUT:
+            text = ev.text.replace("\r", "").replace("\n", "")
+            if text:
+                link.send(f"t {text}")
+            return True
+        return False
+
+    def handle_touch_events(events):
+        # Touch mode: every MOUSEBUTTONDOWN is one atomic tap. Drop all
+        # MOUSEMOTION / MOUSEBUTTONUP — they only cause drag/jitter.
+        for ev in events:
+            if ev.type == pygame.QUIT:
+                pygame.event.post(pygame.event.Event(pygame.QUIT))
+                return
+            if send_key(ev):
+                continue
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                tap(*ev.pos)
+
+    def handle_trackpad_events(events):
+        for ev in events:
+            if ev.type == pygame.QUIT:
+                pygame.event.post(pygame.event.Event(pygame.QUIT))
+                return
+            if send_key(ev):
+                continue
+            if ev.type == pygame.MOUSEBUTTONDOWN and not grabbed:
+                set_grab(True); continue
+            if not grabbed:
+                continue
+            if ev.type == pygame.MOUSEMOTION:
+                tx, ty = pygame_to_mac(*ev.pos)
+                with mac_lock:
+                    if mac_model[0] is None:
+                        continue
+                    dx = tx - mac_model[0]; dy = ty - mac_model[1]
+                    mac_model[0] = tx; mac_model[1] = ty
+                if dx or dy:
+                    send_delta_chunked(dx, dy)
+            elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                link.send("d l")
+            elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
+                link.send("u l")
+            elif ev.type == pygame.MOUSEWHEEL and ev.y:
+                link.send(f"w {ev.y}")
+
     last_frame_surface = None
     clock = pygame.time.Clock()
     try:
@@ -327,68 +402,11 @@ def main():
 
             pygame.display.flip()
 
-            for ev in pygame.event.get():
-                if ev.type == pygame.QUIT:
-                    return
-                if ev.type == pygame.KEYDOWN and ev.key == pygame.K_g and (ev.mod & pygame.KMOD_CTRL) and (ev.mod & pygame.KMOD_ALT):
-                    set_grab(not grabbed); continue
-                if ev.type == pygame.KEYDOWN and ev.key == pygame.K_r and not grabbed:
-                    print("recentering cursor on iPhone Mirroring", file=sys.stderr)
-                    threading.Thread(target=_startup_warp, daemon=True).start()
-                    continue
-                if ev.type == pygame.MOUSEBUTTONDOWN and not grabbed:
-                    set_grab(True); continue
-                if not grabbed:
-                    continue
-                if ev.type == pygame.MOUSEBUTTONDOWN and TOUCH:
-                    # Drop taps in the top 28*SCALE px — that's the macOS
-                    # title-bar zone, and dragging there moves the iPhone
-                    # Mirroring window off to the dummy display.
-                    if ev.pos[1] < int(28 * SCALE):
-                        continue
-                    # Touch: warp to the tap location *before* the click so the
-                    # press happens under the finger. Closed-loop converges
-                    # past macOS pointer acceleration.
-                    px, py = ev.pos
-                    target_mac_x = REGION[0] + int(px / SCALE)
-                    target_mac_y = REGION[1] + int(py / SCALE)
-                    move_to(target_mac_x, target_mac_y)
-                if ev.type == pygame.MOUSEMOTION:
-                    px, py = ev.pos
-                    target_mac_x = REGION[0] + int(px / SCALE)
-                    target_mac_y = REGION[1] + int(py / SCALE)
-                    with mac_lock:
-                        if mac_model[0] is None:
-                            continue
-                        dx = target_mac_x - mac_model[0]
-                        dy = target_mac_y - mac_model[1]
-                        mac_model[0] = target_mac_x
-                        mac_model[1] = target_mac_y
-                    if dx or dy:
-                        send_delta_chunked(dx, dy)
-                elif ev.type == pygame.MOUSEBUTTONDOWN:
-                    if ev.button == 1:
-                        link.send("d l")
-                elif ev.type == pygame.MOUSEBUTTONUP:
-                    if ev.button == 1:
-                        link.send("u l")
-                elif ev.type == pygame.MOUSEWHEEL:
-                    if ev.y:
-                        link.send(f"w {ev.y}")
-                elif ev.type == pygame.KEYDOWN:
-                    name = KEY_MAP.get(ev.key)
-                    # Printable letters/digits arrive via TEXTINPUT with shift
-                    # already resolved; skip kd/ku for them to avoid double-press.
-                    if name and not (len(name) == 1 and name.isalnum()):
-                        link.send(f"kd {name}")
-                elif ev.type == pygame.KEYUP:
-                    name = KEY_MAP.get(ev.key)
-                    if name and not (len(name) == 1 and name.isalnum()):
-                        link.send(f"ku {name}")
-                elif ev.type == pygame.TEXTINPUT:
-                    text = ev.text.replace("\r", "").replace("\n", "")
-                    if text:
-                        link.send(f"t {text}")
+            events = pygame.event.get()
+            if TOUCH:
+                handle_touch_events(events)
+            else:
+                handle_trackpad_events(events)
             clock.tick(60)
     finally:
         stop_event.set()
