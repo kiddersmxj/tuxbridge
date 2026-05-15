@@ -341,13 +341,25 @@ def main():
                 if not grabbed:
                     continue
                 if ev.type == pygame.MOUSEBUTTONDOWN and TOUCH:
-                    # Touch: warp to the tap location *before* the click so the
-                    # press happens under the finger. Closed-loop converges
-                    # past macOS pointer acceleration.
-                    px, py = ev.pos
-                    target_mac_x = REGION[0] + int(px / SCALE)
-                    target_mac_y = REGION[1] + int(py / SCALE)
-                    move_to(target_mac_x, target_mac_y)
+                    # Touch mode: atomic tap. Warp under finger, then send
+                    # d/u together with a known short hold. This avoids two
+                    # past failure modes: SDL occasionally drops the touch-up
+                    # synth event (leaving the button "held"), and rapid
+                    # d/u with no spacing can be misread as a long-press.
+                    if ev.button == 1:
+                        # Always release first in case a prior tap got stuck.
+                        link.send("u l")
+                        px, py = ev.pos
+                        target_mac_x = REGION[0] + int(px / SCALE)
+                        target_mac_y = REGION[1] + int(py / SCALE)
+                        move_to(target_mac_x, target_mac_y)
+                        link.send("d l")
+                        time.sleep(0.04)
+                        link.send("u l")
+                    continue
+                if ev.type == pygame.MOUSEBUTTONUP and TOUCH:
+                    # Swallowed — atomic tap above already released.
+                    continue
                 if ev.type == pygame.MOUSEMOTION:
                     px, py = ev.pos
                     target_mac_x = REGION[0] + int(px / SCALE)
