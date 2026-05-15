@@ -160,22 +160,20 @@ def main():
     mac_cursor = [None, None]
     stop_event = threading.Event()
 
-    def send_delta_chunked(dx, dy, gap=0.004):
-        # Pace chunks: bursts at full rate make macOS pointer acceleration
-        # amplify the motion non-linearly. ~4ms gap keeps reports at a
-        # rate the OS treats as "normal velocity" so 1:1 mapping holds
-        # (especially when accel is disabled, this also keeps Pico's
-        # serial buffer from filling).
+    def send_delta_chunked(dx, dy, gap=0.0):
+        # With pointer acceleration disabled (Mac side), no pacing needed
+        # for normal motion — chunks map 1:1. move_to() passes a small gap
+        # for its corrective bursts so accel residue can't compound.
         first = True
         while dx or dy:
-            if not first:
+            if gap and not first:
                 time.sleep(gap)
             cx = max(-127, min(127, dx)); dx -= cx
             cy = max(-127, min(127, dy)); dy -= cy
             link.send(f"m {cx} {cy}")
             first = False
 
-    def move_to(target_x, target_y, max_iters=12, threshold=3, settle=0.18, max_step=120):
+    def move_to(target_x, target_y, max_iters=6, threshold=4, settle=0.07, max_step=200):
         # Closed-loop convergence: macOS pointer acceleration warps open-loop
         # deltas, so iterate using cursor_daemon feedback until we land.
         deadline_wait = 0.5
@@ -196,7 +194,7 @@ def main():
             # the target by orders of magnitude.
             sdx = max(-max_step, min(max_step, dx))
             sdy = max(-max_step, min(max_step, dy))
-            send_delta_chunked(sdx, sdy)
+            send_delta_chunked(sdx, sdy, gap=0.003)
             # Wait long enough for cursor_daemon to publish a *settled*
             # position (cursor_daemon polls at 20Hz; we need to let the
             # full burst be processed before reading).
