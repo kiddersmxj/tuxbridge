@@ -55,7 +55,7 @@ SCALE = float(os.environ.get("TUXBRIDGE_SCALE", "1.0"))
 KEY_MAP = {
     pygame.K_RETURN: "enter", pygame.K_KP_ENTER: "enter",
     pygame.K_ESCAPE: "esc", pygame.K_BACKSPACE: "backspace",
-    pygame.K_TAB: "tab", pygame.K_SPACE: "space", pygame.K_DELETE: "delete",
+    pygame.K_TAB: "tab", pygame.K_DELETE: "delete",
     pygame.K_UP: "up", pygame.K_DOWN: "down",
     pygame.K_LEFT: "left", pygame.K_RIGHT: "right",
     pygame.K_LSHIFT: "shift", pygame.K_RSHIFT: "shift",
