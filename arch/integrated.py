@@ -189,23 +189,40 @@ def main():
         # Step size kept small (<=40) so macOS pointer acceleration barely
         # engages. After each step we wait for cursor_daemon to publish the
         # new position, then re-aim based on reality. No accel model needed.
+        #
+        # Containment: clamp the target inside REGION, and after every step
+        # check whether the cursor escaped. If it did, the next step is a
+        # corrective pull back inside — guarantees the green dot never sits
+        # outside the iPhone display rect for more than one tick.
+        rx, ry, rw, rh = REGION
+        margin = 2
+        target_x = max(rx + margin, min(rx + rw - 1 - margin, target_x))
+        target_y = max(ry + margin, min(ry + rh - 1 - margin, target_y))
         deadline = time.monotonic() + 0.5
         while mac_cursor[0] is None and time.monotonic() < deadline:
             time.sleep(0.02)
         if mac_cursor[0] is None:
             return False
+        def step(d):
+            if d == 0: return 0
+            s = max(-40, min(40, d // 2 if abs(d) > 4 else d))
+            return s if s != 0 else (1 if d > 0 else -1)
         for _ in range(max_iters):
             cx, cy = mac_cursor[0], mac_cursor[1]
+            # If the cursor escaped REGION, override the target with the
+            # nearest in-bounds point until we're back inside.
+            if not (rx <= cx < rx + rw and ry <= cy < ry + rh):
+                tx = max(rx + margin, min(rx + rw - 1 - margin, cx))
+                ty = max(ry + margin, min(ry + rh - 1 - margin, cy))
+                link.send(f"m {step(tx - cx)} {step(ty - cy)}")
+                time.sleep(0.06)
+                continue
             dx = target_x - cx
             dy = target_y - cy
             if abs(dx) <= threshold and abs(dy) <= threshold:
                 with mac_lock:
                     mac_model[0] = cx; mac_model[1] = cy
                 return True
-            def step(d):
-                if d == 0: return 0
-                s = max(-40, min(40, d // 2 if abs(d) > 4 else d))
-                return s if s != 0 else (1 if d > 0 else -1)
             link.send(f"m {step(dx)} {step(dy)}")
             time.sleep(0.06)
         return False
